@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#080b10">
+  <meta name="unstressd-build" content="2026-07-24-final-1">
   <meta name="description" content="A free, evidence-informed performance nutrition assessment for athletes, first responders and high performers.">
   <meta name="robots" content="index,follow">
   <meta property="og:type" content="website">
@@ -49,7 +50,7 @@ body {
   line-height: 1.5;
 }
 button, input, select { font: inherit; }
-button, a { -webkit-tap-highlight-color: transparent; }
+button, a { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
 a { color: inherit; }
 
 .shell { width: min(1160px, calc(100% - 32px)); margin-inline: auto; }
@@ -184,7 +185,7 @@ input, select {
   transition: border-color .2s ease, box-shadow .2s ease;
 }
 input:focus, select:focus { border-color: rgba(77,141,255,.8); box-shadow: 0 0 0 4px rgba(77,141,255,.11); }
-input:user-invalid, select:user-invalid { border-color: rgba(255,143,150,.7); }
+input.is-invalid, select.is-invalid { border-color: rgba(255,143,150,.7); box-shadow: 0 0 0 4px rgba(255,143,150,.08); }
 
 .segmented { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .segment {
@@ -403,6 +404,11 @@ input:user-invalid, select:user-invalid { border-color: rgba(255,143,150,.7); }
 </style>
 </head>
 <body>
+  <noscript>
+    <div style="padding:16px;background:#7f1d1d;color:white;text-align:center;font-family:system-ui,sans-serif">
+      JavaScript is required for this assessment. Please enable JavaScript and reload the page.
+    </div>
+  </noscript>
   <a class="skip-link" href="#assessment">Skip to assessment</a>
 
   <header class="site-header">
@@ -1097,23 +1103,34 @@ const errorBox = document.querySelector("#formError");
 let currentStep = 0;
 let latestResult = null;
 
-function showError(message) {
+function showError(message, field = null) {
   errorBox.textContent = message;
   errorBox.hidden = false;
+
+  document.querySelectorAll(".is-invalid").forEach((item) => item.classList.remove("is-invalid"));
+  if (field) {
+    field.classList.add("is-invalid");
+    field.focus({ preventScroll: true });
+    field.scrollIntoView({ behavior: "smooth", block: "center" });
+  } else {
+    errorBox.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 }
 
 function clearError() {
   errorBox.hidden = true;
   errorBox.textContent = "";
+  document.querySelectorAll(".is-invalid").forEach((item) => item.classList.remove("is-invalid"));
 }
 
-function showStep(index) {
+function showStep(index, shouldScroll = true) {
   currentStep = Math.max(0, Math.min(index, steps.length - 1));
 
   steps.forEach((step, i) => step.classList.toggle("is-active", i === currentStep));
   tabs.forEach((tab, i) => {
     tab.classList.toggle("is-active", i === currentStep);
     tab.classList.toggle("is-complete", i < currentStep);
+    tab.setAttribute("aria-current", i === currentStep ? "step" : "false");
   });
 
   backButton.hidden = currentStep === 0;
@@ -1122,38 +1139,61 @@ function showStep(index) {
 
   if (currentStep === steps.length - 1) renderResults();
 
-  document.querySelector(".assessment-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (shouldScroll) {
+    document.querySelector(".assessment-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 function requiredFieldsForStep(stepIndex) {
-  return [...steps[stepIndex].querySelectorAll("[required]")];
+  return [...steps[stepIndex].querySelectorAll("[required]")].filter((field) => {
+    const wrapper = field.closest("[hidden]");
+    return !wrapper;
+  });
 }
 
 function validateStep(stepIndex) {
   clearError();
-  const invalid = requiredFieldsForStep(stepIndex).find((field) => !field.checkValidity());
+
+  const invalid = requiredFieldsForStep(stepIndex).find((field) => {
+    if (!field.value || !field.checkValidity()) return true;
+    return false;
+  });
 
   if (invalid) {
-    invalid.focus();
-    showError("Please complete the required fields before continuing.");
+    showError("Please complete this field before continuing.", invalid);
     return false;
   }
 
   if (stepIndex === 0) {
     const units = document.querySelector("#units").value;
-    const weight = units === "metric"
-      ? Number(document.querySelector("#weightKg").value)
-      : Number(document.querySelector("#weightLb").value);
-    const height = units === "metric"
-      ? Number(document.querySelector("#heightCm").value)
-      : Number(document.querySelector("#heightFt").value);
+    const weightField = units === "metric"
+      ? document.querySelector("#weightKg")
+      : document.querySelector("#weightLb");
+    const heightField = units === "metric"
+      ? document.querySelector("#heightCm")
+      : document.querySelector("#heightFt");
 
-    if (!weight || !height) {
-      showError("Please enter your height and weight.");
+    if (!Number(heightField.value)) {
+      showError("Please enter your height.", heightField);
+      return false;
+    }
+
+    if (!Number(weightField.value)) {
+      showError("Please enter your weight.", weightField);
       return false;
     }
   }
 
+  return true;
+}
+
+function validateAllAssessmentSteps() {
+  for (const stepIndex of [0, 1, 2, 3]) {
+    if (!validateStep(stepIndex)) {
+      if (currentStep !== stepIndex) showStep(stepIndex, false);
+      return false;
+    }
+  }
   return true;
 }
 
@@ -1166,11 +1206,7 @@ function setRing(element, score) {
 }
 
 function renderResults() {
-  if (![0,1,2,3].every(validateStep)) {
-    showStep(0);
-    showError("Some required information is missing. Review the assessment and try again.");
-    return;
-  }
+  if (!validateAllAssessmentSteps()) return;
 
   const result = calculateAssessment(formValues());
   latestResult = result;
@@ -1206,22 +1242,39 @@ function renderResults() {
   document.querySelector("#fibreValue").textContent = `${result.fibre} g/day`;
 }
 
-nextButton.addEventListener("click", () => {
+nextButton.addEventListener("click", (event) => {
+  event.preventDefault();
+  clearError();
+
   if (currentStep < steps.length - 1) {
     if (!validateStep(currentStep)) return;
     showStep(currentStep + 1);
-  } else {
-    renderResults();
+    return;
   }
+
+  renderResults();
 });
 
-backButton.addEventListener("click", () => showStep(currentStep - 1));
+form.addEventListener("submit", (event) => event.preventDefault());
+
+backButton.addEventListener("click", (event) => {
+  event.preventDefault();
+  clearError();
+  showStep(currentStep - 1);
+});
 
 tabs.forEach((tab) => {
-  tab.addEventListener("click", () => {
+  tab.addEventListener("click", (event) => {
+    event.preventDefault();
     const target = Number(tab.dataset.stepTarget);
-    if (target <= currentStep || target === currentStep + 1) {
-      if (target > currentStep && !validateStep(currentStep)) return;
+
+    if (target < currentStep) {
+      clearError();
+      showStep(target);
+      return;
+    }
+
+    if (target === currentStep + 1 && validateStep(currentStep)) {
       showStep(target);
     }
   });
@@ -1281,16 +1334,23 @@ resetButton.addEventListener("click", () => {
   document.querySelector("#resultStatus").hidden = false;
   updateEnduranceFields();
   clearError();
-  showStep(0);
+  showStep(0, false);
 });
 
 
-document.querySelector("#printReportButton").addEventListener("click", () => {
-  if (!latestResult) return;
-  window.print();
-});
+const printReportButton = document.querySelector("#printReportButton");
+if (printReportButton) {
+  printReportButton.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (!latestResult) return;
+    window.print();
+  });
+}
 
-document.querySelector("#copyResultsButton").addEventListener("click", async () => {
+const copyResultsButton = document.querySelector("#copyResultsButton");
+if (copyResultsButton) {
+copyResultsButton.addEventListener("click", async (event) => {
+  event.preventDefault();
   if (!latestResult) return;
 
   const summary = [
@@ -1319,10 +1379,11 @@ document.querySelector("#copyResultsButton").addEventListener("click", async () 
     window.prompt("Copy your results:", summary);
   }
 });
+}
 
 document.querySelector("#currentYear").textContent = new Date().getFullYear();
 updateEnduranceFields();
-showStep(0);
+showStep(0, false);
 
 </script>
 </body>
